@@ -1,0 +1,203 @@
+---
+title: "DATA 643 Proj 1"
+author: "Dan Fanelli"
+date: "June 5, 2017"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+# Global Baseline Predictors and RMSE
+
+![](lastfm.jpg)
+
+```{r message=FALSE, echo=FALSE, warning=FALSE}
+library(knitr)
+library(sqldf)
+CEILING_LISTEN_COUNTS <- 1000
+```
+
+## LastFM Users and Artists: Listen Counts
+
+LastFM provides a data set that gives us counts of how many times a LastFM user has listened to a particular artist.  This system should recommend musical artists to users.
+
+We will assume that a user's "listen count" per artist is analogous to an explicit "rating" of the artist
+
+We well exclude listen counts above `r I(CEILING_LISTEN_COUNTS)` for the sake of visualizing the data and avoiding skew via huge listen counts. (Maybe listen counts above 5000 are "bots" or invalid in some other way)
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# helper function (there was some file formatting issues....apple was source of TSV's...
+readTSV <- function(f, tmpF){
+  lines <- readLines(f)
+  lines_with_q <- grep("\\?", lines)
+  lines_with_no_q <- lines[-lines_with_q]
+  fileConn <- file(tmpF)
+  writeLines(lines_with_no_q, fileConn)
+  close(fileConn)
+  read.table(file = tmpF, sep="\t",  quote = "", header=TRUE, fill=TRUE)
+}
+
+artists <- readTSV("data/artists.dat", "data/_TMP_artists.dat");
+#kable(head(artists))
+user_artists <- read.table(file = "data/user_artists.dat", sep="\t",  header=TRUE)
+#kable(head(user_artists))
+
+all_data <- sqldf("select userID, artistID, name as artist, weight as listen_count from artists, user_artists where artists.id = user_artists.artistID")
+
+# Shuffle b/c there was a pattern in the scaled values without:
+all_data <- all_data[sample(nrow(all_data)),]
+
+kable(head(all_data, n=10), caption="A Sample of the Initial Data")
+
+# If you listened to an artist more than 1000, who knows, maybe you're a bot
+all_data <- all_data[all_data$listen_count < CEILING_LISTEN_COUNTS,]
+
+par(mfrow=c(1,2))
+hist(all_data$listen_count, main="User-Artist Listens", xlab="Listen Count (Artist+User)")
+boxplot(all_data$listen_count, main="User-Artist Listens", ylab="Frequency")
+```
+
+
+```{r message=FALSE, echo=FALSE, warning=FALSE}
+# this batch of data took some time, so tried with different sample sizes:
+
+#train <- all_data[1:80,]
+#test <- all_data[81:100,]
+
+#train <- all_data[1:800,]
+#test <- all_data[801:1000,]
+
+train <- all_data[1:8000,]
+test <- all_data[8001:10000,]
+
+numRows <- nrow(all_data)
+numTrainRows <- floor(numRows * 0.8)
+
+#train <- all_data[1:numTrainRows,]
+#test <- all_data[numTrainRows+1:numRows,]
+
+RAW_AVG <- round(mean(train$listen_count), digits = 2)
+
+```
+
+### The Raw average of ALL user-item combination = `r RAW_AVG`
+
+### Calculate the RMSE for raw average for both your training data and your test data.
+
+RMSE for Raw Avg:
+
+```{r message=FALSE, echo=FALSE, warning=FALSE}
+train_RMSE <- sqrt(sum((RAW_AVG - train$listen_count)^2))/nrow(train)
+cat('RMSE (TRAIN)', round(train_RMSE, digits=2))
+
+test_RMSE <- sqrt(sum((RAW_AVG - test$listen_count)^2))/nrow(test)
+cat('RMSE (TEST)', round(test_RMSE, digits=2))
+
+```
+
+### Using your training data, calculate the bias for each user and each item
+
+```{r message=FALSE, echo=FALSE, warning=FALSE}
+user_means <- function(source){
+  sqldf(paste0("select avg(listen_count) userMean, userID from ",source," group by userID"))
+}
+
+artist_means <- function(source){
+  sqldf(paste0("select avg(listen_count) artistMean, artistID from ",source," group by artistID"))
+}
+
+```
+
+#### USER BIAS (TRAIN)
+
+```{r message=FALSE, echo=FALSE, warning=FALSE}
+train_user_means <- user_means("train")
+train_user_means$user_bias <- (train_user_means$userMean - RAW_AVG)
+
+head(train_user_means)
+```
+
+#### ARTIST BIAS (TRAIN)
+
+```{r message=FALSE, echo=FALSE, warning=FALSE}
+train_artist_means <- artist_means("train")
+train_artist_means$artist_bias <- (train_artist_means$artistMean - RAW_AVG)
+
+head(train_artist_means)
+```
+
+#### USER BIAS (TEST)
+
+```{r message=FALSE, echo=FALSE, warning=FALSE}
+test_user_means <- user_means("test")
+test_user_means$user_bias <- (test_user_means$userMean - RAW_AVG)
+
+head(test_user_means)
+```
+
+#### ARTIST BIAS (TEST)
+
+```{r message=FALSE, echo=FALSE, warning=FALSE}
+test_artist_means <- artist_means("test")
+test_artist_means$artist_bias <- (test_artist_means$artistMean - RAW_AVG)
+
+head(test_artist_means)
+```
+
+### From the raw average, and the appropriate user and item biases, calculate the baseline predictors for every user-item combination.
+
+```{r message=FALSE, echo=FALSE, warning=FALSE}
+do_predictions <- function(data, user_means, artist_means){
+  data$listen_count_PREDICTION <- 0
+  
+  for(i in c(1:nrow(data))){
+    this_user_id <- data[i,]$userID
+    this_user_bias <- sqldf(paste0("select user_bias from user_means where userID = ",this_user_id))$user_bias
+    
+    this_artist_id <- data[i,]$artistID
+    this_artist_bias <- sqldf(paste0("select artist_bias from artist_means where artistID = ",this_artist_id))$artist_bias
+    
+    data[i,]$listen_count_PREDICTION <- RAW_AVG + this_user_bias + this_artist_bias
+    # if that value was less than zero, then set to zero
+    if(data[i,]$listen_count_PREDICTION < 0){
+      data[i,]$listen_count_PREDICTION <- 0;
+    }
+  }
+  data
+}
+
+train <- do_predictions(train, train_user_means, train_artist_means)
+kable(head(train), caption="Train Data Predictions")
+
+test <- do_predictions(test, test_user_means, test_artist_means)
+kable(head(test), caption="Test Data Predictions")
+
+```
+
+### Calculate the RMSE for the baseline predictors for both your training data and your test data.
+```{r message=FALSE, echo=FALSE, warning=FALSE}
+base_rmse_train <- sqrt(sum((RAW_AVG - train$listen_count)^2))/nrow(train)
+our_rmse_train <- sqrt(sum((train$listen_count_PREDICTION - train$listen_count)^2))/nrow(train)
+
+base_rmse_test <- sqrt(sum((RAW_AVG - test$listen_count)^2))/nrow(test)
+our_rmse_test <- sqrt(sum((test$listen_count_PREDICTION - test$listen_count)^2))/nrow(test)
+```
+
+* Base RMSE (train) = __`r round(base_rmse_train, digits=2)`__
+* OUR RMSE (train) = __`r round(our_rmse_train, digits=2)`__
+* OUR IMPROVEMENT (train) = __`r round(100 * (base_rmse_train - our_rmse_train)/base_rmse_train, digits=2)`%__
+
+* Base RMSE (test) = __`r round(base_rmse_test, digits=2)`__
+* OUR RMSE (test) = __`r round(our_rmse_test, digits=2)`__
+* OUR IMPROVEMENT (test) = __`r round(100 * (base_rmse_test - our_rmse_test)/base_rmse_test, digits=2)`%__
+
+### Summarize your results.
+
+Though the final result only shows the evaluation of the full data set, but the steps leading up to it were as follows:
+
+* When using train and test sets of __80__ and __20__, respectively, the train improvement was __16.35%__ and the test improvement was __10.05%__
+* When using train and test sets of __800__ and __200__, respectively, the train improvement was __26.72%__ and the test improvement was __24.91%__
+* When using train and test sets of __8000__ and __2000__, respectively, the train improvement was __35.07%__ and the test improvement was __31.38%__
+
+It seems safe to say that as the data sets grow, the gains in using this strategy also increase.
+
