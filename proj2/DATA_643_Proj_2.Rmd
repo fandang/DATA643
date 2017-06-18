@@ -1,0 +1,245 @@
+---
+title: "DATA 643 Proj 2"
+author: "Dan Fanelli"
+date: "June 12, 2017"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Content-Based and Collaborative Filtering
+
+***The last.fm story continued...***
+
+![](lastfm.jpg)
+
+### Listen counts from Proj 1:
+
+Below is a sample of the initial join between ***users*** and ***artists***, along with the combination's corresponding ***listen_count***.
+
+```{r message=FALSE, echo=FALSE, warning=FALSE}
+library(recommenderlab)
+library(knitr)
+library(sqldf)
+library(reshape2)
+library(ggplot2)
+library(Matrix)
+library(reshape2)
+
+#MAX_TO_LEARN_FROM <- 5000
+MAX_TO_LEARN_FROM <- 25000
+RATING_0_TO_THIS <- 5
+# the following variable causes the massive slowdown:
+NUM_SAMPLE_INDEXES <- 10
+# larger FLOOR_LISTEN_COUNTS take out the lesser known bands, make things smaller
+FLOOR_LISTEN_COUNTS <- 5
+CEILING_LISTEN_COUNTS <- 500
+readTSV <- function(f, tmpF){
+  lines <- readLines(f)
+  lines_with_q <- grep("\\?", lines)
+  lines_with_no_q <- lines[-lines_with_q]
+  fileConn <- file(tmpF)
+  writeLines(lines_with_no_q, fileConn)
+  close(fileConn)
+  read.table(file = tmpF, sep="\t",  quote = "", header=TRUE, fill=TRUE)
+}
+artists <- readTSV("data/artists.dat", "data/_TMP_artists.dat");
+user_artists <- read.table(file = "data/user_artists.dat", sep="\t",  header=TRUE)
+user_artist_listen_counts <- sqldf("select userID, artistID, name as artist, weight as listen_count from artists, user_artists where listen_count > 0 and artists.id = user_artists.artistID order by listen_count desc")
+
+# The Ceiling:
+user_artist_listen_counts <- user_artist_listen_counts[user_artist_listen_counts$listen_count < CEILING_LISTEN_COUNTS,]
+
+# The Floor:
+user_artist_listen_counts <- user_artist_listen_counts[user_artist_listen_counts$listen_count > FLOOR_LISTEN_COUNTS,]
+
+# DEV: trim down to something smaller:
+user_artist_listen_counts <- user_artist_listen_counts[c(1:MAX_TO_LEARN_FROM),]
+# HAVE TO DO THIS SAMPLE AT THE END OR ELSE THE MATRIX COL NAMES WILL CHANGE
+user_artist_listen_counts <- user_artist_listen_counts[sample(nrow(user_artist_listen_counts)),]
+kable(head(user_artist_listen_counts, n=10), caption="A Sample of the Initial Data (Similar to Proj 1)")
+```
+
+```{r echo=FALSE, eval=FALSE}
+# DEBUG
+
+head(sqldf("select userID, count(*) as the_count from user_artist_listen_counts group by userID order by the_count desc"), n=100)
+
+head(sqldf("select artist, count(*) as the_count from user_artist_listen_counts group by artist order by the_count desc"), n=100)
+
+head(sqldf("select artist, count(*) as the_count from user_artist_listen_counts where artist in ('Marilyn Manson','DIR EN GREY','Dimmu Borgir','And One','Reaper','Duran Duran','Kylie Minogue','Goldfrapp','Air','Fleetwood Mac','Christina Aguilera','Justin Timberlake','Backstreet Boys','Ke$ha','Limp Bizkit','Jethro Tull') group by artist order by the_count desc"), n=100)
+
+```
+
+### Listen counts as SCORES from 0 to 5:
+
+The listen counts above are normalized to a SCORE of 0 to 5. The pre-normalization and post-normalization histograms are displayed.
+
+```{r message=FALSE, echo=FALSE, warning=FALSE}
+listens <- user_artist_listen_counts[,c(1,2,3,4)]
+# inverse_multiplier = 1 means 10 total categories, 2 means 5 total categories, etc.  Lower inverse_multiplier means more granular suggestions, Higher means less granular suggestions 
+
+par(mfrow=c(1,2))
+
+#cat("nrow, min, max, head")
+  
+#length(listens$listen_count)
+#min(listens$listen_count)
+#max(listens$listen_count)
+#head(listens$listen_count)
+
+hist(listens$listen_count, main = "PRE Conversion Listen Counts", xlab = "Score", breaks = 6)
+
+# https://stats.stackexchange.com/questions/70801/how-to-normalize-data-to-0-1-range
+
+listens$listen_count <- (listens$listen_count-min(listens$listen_count))/(max(listens$listen_count)-min(listens$listen_count))
+
+listens$listen_count <- listens$listen_count * RATING_0_TO_THIS
+listens$listen_count <- round(listens$listen_count, digits = 0)
+
+# comment out next line to use 0-10 instead of 0s and 1s
+#listens[listens$listen_count > 0,]$listen_count <- 1
+
+#cat("nrow, min, max, head")
+
+#length(listens$listen_count)
+#min(listens$listen_count)
+#max(listens$listen_count)
+#head(listens$listen_count)
+
+hist(listens$listen_count, main = "PRE Conversion Listen Counts", xlab = "Score", breaks = 6)
+
+```
+
+### Listen counts as SCORES from 0 to 5:
+
+Below is a sample of the post-normalization scores.
+
+```{r message=FALSE, echo=FALSE, warning=FALSE}
+kable(head(listens, n=10), caption = "The Core Listen Count Data Simplified into Rankings from 1-5")
+
+# col 2 is artistID, col 3 is artist name:
+#user_x_artist <- dcast(listens[,c(1,3,4)], userID ~ artist)
+user_x_artist <- as.matrix(dcast(listens[,c(1,2,4)], userID ~ artistID))
+
+# paste an a on each col name so we can query it:
+colnames(user_x_artist) <- paste("a", colnames(user_x_artist), sep = "")
+colnames(user_x_artist)[1] <- "userID"
+
+```
+
+### A Sample of the User-Artist Matrix:
+
+Only a sample since the x-axis corresponds to all ***`r ncol(user_x_artist)`*** artists and the y-axis corresponds to all ***`r nrow(user_x_artist)`*** users.
+
+```{r message=FALSE, echo=FALSE, warning=FALSE}
+######## SAMPLE START (just to show some data that has rankings)
+data_sample <- data.frame(user_x_artist[,1:10])
+
+# a1	a2	a7	a9	a16	a17	a18	a23	a27
+data_sample <- sqldf("select * from data_sample where a1 > 0 or a2 > 0 or a3 > 0 or a5 > 0 or a6 > 0 or a7 > 0 or a8 > 0 or a9 > 0 or a10 > 0")
+
+kable(head(data_sample))
+######## SAMPLE END
+
+getArtistName <- function(artistID){
+  aID <- substring(artistID, 2)
+  q <- paste0("select distinct(name) as the_name from artists where id = ",aID)
+  
+  qResult <- sqldf(q)
+  return (qResult[1,1])
+}
+```
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# THANK YOU: https://stackoverflow.com/questions/29789149/recommenderlab-not-giving-topn-list
+
+#Dt = matrix(c(NA,2,5,NA,3,NA,3,NA,2,1,NA,NA,4,1,1,3,2,2,3,NA,3,3,1,5,5), nrow = 5, ncol = 5, dimnames = list(user = paste("u", 1:5, sep = ''), item = paste("i", 1:5, sep = '')))
+
+do_recs <- function(recType, predictionType){
+  userUserMtrx <- as(user_x_artist, "realRatingMatrix")
+  userUserRecommender <- Recommender(userUserMtrx, method = recType, parameter=list(
+    normalize='center', 
+    #method='Pearson', 
+    nn=10 # it doens't know what nn means....look at log..
+    )
+  )
+  
+  sample_indexes <- sample(c(1:nrow(userUserMtrx)), size = NUM_SAMPLE_INDEXES, replace = FALSE)
+
+  userUserRecom <- predict(userUserRecommender, userUserMtrx[sample_indexes,], n = 10, type=predictionType)
+  
+  recsList <- as(userUserRecom, "list")
+  
+  User <- c()
+  Rec_1 <- c() 
+  Rec_2 <- c() 
+  Rec_3 <- c() 
+  Rec_4 <- c() 
+  Rec_5 <- c() 
+  Rec_6 <- c() 
+  Rec_7 <- c() 
+  Rec_8 <- c() 
+  for(i in c(1:length(recsList))){
+      nextRec <- recsList[[i]]
+      User <- c(User, i)
+      Rec_1 <- c(Rec_1, getArtistName(nextRec[1]))
+      Rec_2 <- c(Rec_2, getArtistName(nextRec[2]))
+      Rec_3 <- c(Rec_3, getArtistName(nextRec[3]))
+      Rec_4 <- c(Rec_4, getArtistName(nextRec[4]))
+      Rec_5 <- c(Rec_5, getArtistName(nextRec[5]))
+      Rec_6 <- c(Rec_6, getArtistName(nextRec[6]))
+      Rec_7 <- c(Rec_7, getArtistName(nextRec[7]))
+      Rec_8 <- c(Rec_8, getArtistName(nextRec[8]))
+  }
+  data.frame(User, Rec_1, Rec_2, Rec_3, Rec_4, Rec_5, Rec_6, Rec_7, Rec_8)
+}
+```
+
+## User-User Filtering ("UBCF") Recommendations
+
+Below are the ***"Top 8 User-User"*** Recommendations for specified users.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+recs_with_ids <- do_recs("UBCF", "topNList")
+kable(recs_with_ids, caption="UBCF: User-User topNList")
+```
+
+## Item-Item Filtering ("IBCF") Recommendations
+
+Below are the ***"Top 8 Item-Item"*** Recommendations for specified users.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+recs_with_ids <- do_recs("IBCF", "topNList")
+kable(recs_with_ids, caption="IBCF: Item-Item topNList")
+```
+
+## Conclusions
+
+Ideally, code like below could run on multiple machines, but RAM and Time did not allow:
+
+```{r echo=TRUE, eval=FALSE}
+for(a in 1:floor_listen_count_options){
+  for(b in 1:ceiling_listen_count_options){
+    for(c in 1:number_of_ratings_blocks_max){
+      for(d in 1:num_nearest_neighbor_options)
+        #etc. etc.
+        do_the_calculations(data, a, b, c, d, ...);
+    }
+  }  
+}  
+```
+
+This problem shows how useful a technology like Spark could be in distribution all of these possible combinations to the RAM of multiple computers simultaneously.
+
+When using 5000 as a sample size, all recommendations came back very very similar.  With 25k, they got a bit more unique
+
+The run times for learning sample sizes of:
+
+* 5k = 4 minues
+* 25k = 40 minutes
+* All = (not happening)
+
+Beyond this, the main thoughts were that the User-User Filtering seemd to produce more duplicates than the Item-Item Filtering.  There didn't seem to be an obvious reason why certain bands were showing up the most often - ie - MALICE MIZER was first on nearly all the lists, it was not because this artist appeared more often than the others, or any other obvious reason.
+
+Final Thought: Watching the video about Spotify and how they need to use a subset of the full matrix is hitting home as my 25k run goes into minute 35.
