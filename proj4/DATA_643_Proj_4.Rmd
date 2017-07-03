@@ -1,0 +1,192 @@
+---
+title: "DATA 643 Proj 4"
+author: "Dan Fanelli"
+date: "June 27, 2017"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Accuracy and Beyond
+
+* This data was taken from the Kaggle "Instacart Market Basket Analysis" Competition
+* https://www.kaggle.com/c/instacart-market-basket-analysis/data
+
+## Business Goal:
+
+We would like to give newer products room to grow.  Therefore, we will not view the order counts, we will simply observe whether a product has been purchsed previously or not. This will allow for the "underdog" products to get a greater opportunity than their numbers may allow for otherwise.
+
+```{r message=FALSE, echo=FALSE, warning=FALSE}
+#set.seed(11)
+#SUBSET_SIZE <- 2000
+#NUM_TO_LEARN_FROM <- 1000
+#MAX_ITER <- 10
+#METRICS_SUBSET_SIZE <- 1000
+
+set.seed(3)
+SUBSET_SIZE <- 5000
+NUM_TO_LEARN_FROM <- 1000
+MAX_ITER <- 25
+METRICS_SUBSET_SIZE <- 1000
+
+#set.seed(3)
+#SUBSET_SIZE <- 8000
+#NUM_TO_LEARN_FROM <- 3000
+#MAX_ITER <- 50
+#METRICS_SUBSET_SIZE <- 2000
+
+library(knitr)
+library(sqldf)
+library(recommenderlab)
+library(reshape2)
+
+DO_LOAD <- FALSE;
+
+if(DO_LOAD){
+
+  orders <- read.csv(file="data/orders.csv", header=TRUE, sep=",")
+  
+  order_products_prior <- read.csv(file="data/order_products__prior.csv", header=TRUE, sep=",")
+  products <- read.csv(file="data/products.csv", header=TRUE, sep=",")
+  departments <- read.csv(file="data/departments.csv", header=TRUE, sep=",")
+  aisles <- read.csv(file="data/aisles.csv", header=TRUE, sep=",")
+
+  all <- sqldf("select o.eval_set, o.order_number, o.order_dow, o.order_hour_of_day, o.days_since_prior_order, o.user_id, opp.order_id, opp.product_id, opp.add_to_cart_order, opp.reordered, prd.product_name, prd.aisle_id, prd.department_id, dpt.department, asl.aisle from orders o, order_products_prior opp, products prd, departments dpt, aisles asl where o.order_id = opp.order_id and opp.product_id = prd.product_id and prd.department_id = dpt.department_id and prd.aisle_id = asl.aisle_id")
+  
+  saveRDS(all, "all.rds")
+}
+
+recsToDataFrame <- function(recommendations){
+  # instantiate empty collections...    
+  User <- Rec_1 <- Rec_2 <- Rec_3 <- Rec_4 <- Rec_5 <- c();
+  for(i in c(1:length(recommendations))){
+        nextRec <- recommendations[[i]]
+        User <- c(User, i)
+        Rec_1 <- c(Rec_1, nextRec[1])
+        Rec_2 <- c(Rec_2, nextRec[2])
+        Rec_3 <- c(Rec_3, nextRec[3])
+        Rec_4 <- c(Rec_4, nextRec[4])
+        Rec_5 <- c(Rec_5, nextRec[5])
+    }
+    data.frame(User, Rec_1, Rec_2, Rec_3, Rec_4, Rec_5)
+}
+
+all <- readRDS("all.rds")
+# just show bought or not bought binary
+all[all$add_to_cart_order > 1, ]$add_to_cart_order <- 1
+names(all)[names(all) == 'add_to_cart_order'] <- 'BOUGHT'
+#head(all)
+
+# at 100k, it says "cannot allocate vector of size 7.5 GB"
+# https://stackoverflow.com/questions/12231020/reshape2-dcast-error-on-large-dataset
+all <- all[sample(nrow(all), SUBSET_SIZE), ]
+saveRDS(all, "sm_all.rds")
+```
+
+## A Sample of the (Joined) Kaggle Data Set:
+
+```{r message=FALSE, echo=FALSE, warning=FALSE}
+all <- readRDS("sm_all.rds")
+head(all)
+```
+
+## A Sample of the 3 Fields that will be focused upon:
+
+```{r message=FALSE, echo=FALSE, warning=FALSE}
+all <- all[,c("user_id","product_id","BOUGHT")]
+head(all)
+
+user_x_product <- as.matrix(dcast(all, user_id ~ product_id))
+
+allMtrx <- as(user_x_product, "realRatingMatrix")
+
+go_for <- function(theMethod){
+  rec_params <- list(k=10, maxiter=MAX_ITER, normalize='center', verbose=FALSE)
+  theRecommender <- Recommender(allMtrx[c(1:NUM_TO_LEARN_FROM),], method = theMethod, parameter=rec_params)
+  #theRecom <- predict(theRecommender, allMtrx[c(1:50),], n=10, type="topNList")
+  theRecom <- predict(theRecommender, allMtrx, n=10, type="topNList")
+  theRecsList <- as(theRecom, "list")
+  resultDF <- recsToDataFrame(theRecsList)
+  #sqldf("select * from resultDF where Rec_1 IS NOT \"NA\" and Rec_2 IS NOT \"NA\" and Rec_3 IS NOT \"NA\" and Rec_4 IS NOT \"NA\" and Rec_5 IS NOT \"NA\" ")
+  resultDF
+}
+```
+
+## UBCF Recommendations
+
+```{r message=FALSE, echo=FALSE, warning=FALSE}
+kable(head(go_for("UBCF")))
+```
+
+## IBCF Recommendations
+
+```{r message=FALSE, echo=FALSE, warning=FALSE}
+kable(head(go_for("IBCF")))
+```
+
+## RANDOM Recommendations
+
+```{r message=FALSE, echo=FALSE, warning=FALSE}
+kable(head(go_for("RANDOM")))
+```
+
+## POPULAR Recommendations
+
+```{r message=FALSE, echo=FALSE, warning=FALSE}
+kable(head(go_for("POPULAR")))
+```
+
+## SVD Recommendations
+
+```{r message=FALSE, echo=FALSE, warning=FALSE}
+kable(head(go_for("SVD")))
+```
+
+## ACCURACY: METRICS
+
+```{r message=FALSE, echo=FALSE, warning=FALSE}
+e <- evaluationScheme(allMtrx[1:METRICS_SUBSET_SIZE], method="split", train=0.9, given=15)
+
+# creation of recommender models
+rec.ubcf <- Recommender(getData(e, "train"), "UBCF")
+rec.ibcf <- Recommender(getData(e, "train"), "IBCF")
+rec.random <- Recommender(getData(e, "train"), "RANDOM")
+rec.popular <- Recommender(getData(e, "train"), "POPULAR")
+rec.svd <- Recommender(getData(e, "train"), "SVD")
+
+# making predictions on the test data set
+p.ubcf <- predict(rec.ubcf, getData(e, "known"), type="ratings")
+p.ibcf <- predict(rec.ibcf, getData(e, "known"), type="ratings")
+p.random <- predict(rec.random, getData(e, "known"), type="ratings")
+p.popular <- predict(rec.popular, getData(e, "known"), type="ratings")
+p.svd <- predict(rec.svd, getData(e, "known"), type="ratings")
+
+# obtaining the error metrics for all approaches and comparing them
+error.ubcf <- calcPredictionAccuracy(p.ubcf, getData(e, "unknown"))
+error.ibcf <- calcPredictionAccuracy(p.ibcf, getData(e, "unknown"))
+error.random <- calcPredictionAccuracy(p.random, getData(e, "unknown"))
+error.popular <- calcPredictionAccuracy(p.popular, getData(e, "unknown"))
+error.svd <- calcPredictionAccuracy(p.svd, getData(e, "unknown"))
+
+error <- rbind(error.ubcf, error.ibcf, error.random, error.popular, error.svd)
+rownames(error) <- c("UBCF","IBCF","RANDOM","POPULAR","SVD")
+
+error
+
+```
+
+## If only online evaluation was possible:
+
+Changes in recent events would not be possible with this offline scenario.  Examples:
+
+* A hurricane is on its way, people are stocking up on something early - what would that be?
+* A terrorist attack has recently happened in a specific location, what products are newly in demand right now because of this.
+* A recent twitter trending topic has arisen, and the seller would like to be able to react to this.
+
+![Changes](hurricane_attack_twitter.png)
+
+## Conclusions
+
+* Once again, the hours of loading into the base RDA showed more than in the past.  In the past, it was merely the size of the data.  In this case, I believe it showed just how expensive row relations can be, especially in case like this, where the text files have no notion of ***foreign keys***
+* These packages do not seem stable to me.  I run a job with good output, and then with no changes, click again and R crashes with no error output, just a line number.  Java would never leave you hanging like that.
+* It turned out to be a little bit of bad data and my not setting ***set.seed()*** in the sampling
