@@ -1,0 +1,7 @@
+17/07/12 17:41:10 INFO SparkSqlParser: Parsing command: 
+
+select uta.userID, artists.id as the_artist_id, artists.name as artistName, avg(user_artists.weight) as userArtistWeight, uta.tagID, tagValue, (SELECT COUNT(*) AS NUM_FRIENDS_WHO_LISTEN FROM user_friends WHERE user_friends.userID = uta.userID AND user_friends.friendID in (select distinct(userID) from user_artists where artistID = uta.artistID)) AS FRIEND_COUNT from artists, tags, user_tagged_artists uta, user_artists where artists.id = uta.artistID and tags.tagID = uta.tagID and uta.userId = user_artists.userID and uta.artistID = user_artists.artistID group by uta.userID, the_artist_id, artistName, uta.tagID, tagValue, FRIEND_COUNT
+
+Exception in thread "main" org.apache.spark.sql.AnalysisException: 
+
+cannot resolve '`artists.id`' given input columns: [id	name	url	pictureURL, tagID	tagValue, userID	artistID	tagID	day	month	year, userID	artistID	weight]; line 1 pos 427
