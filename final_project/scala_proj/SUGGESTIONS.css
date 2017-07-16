@@ -1,0 +1,28 @@
+body {
+    background-color: #FFFFFF;
+}
+
+h1 {
+    border: 1px solid #DDDDDD;
+    background-color: #EEEEEE;
+    padding:5px;
+}
+
+h2 {
+    border: 1px solid #CCCCCC;
+    background-color: #DDDDDD;
+    padding:3px;
+}
+
+div {
+	float:left;
+    border: 1px solid #DDDDDD;
+    background-color: #EEEEEE;
+	padding:5px;
+	margin-right:5px;
+}
+
+img {
+	width:20px;
+	padding-right:5px;
+}
